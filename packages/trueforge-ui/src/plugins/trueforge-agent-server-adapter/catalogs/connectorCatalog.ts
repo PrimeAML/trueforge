@@ -41,6 +41,14 @@ export function toUiAuthPublic(auth: TrueForgeApi.McpServerManifestAuth | undefi
   if (auth.type === 'dcr') {
     return { type: 'dcr' };
   }
+  if (auth.type === 'oauth') {
+    return {
+      type: 'oauth',
+      clientId: auth.client_id,
+      ...(auth.scopes === undefined ? {} : { scopes: auth.scopes }),
+      ...(auth.client_secret === undefined ? {} : { hasClientSecret: true }),
+    };
+  }
   const headerName = Object.keys(auth.headers)[0];
   return {
     type: 'header',
@@ -54,6 +62,16 @@ export function toHarnessAuth(auth: ConnectorAuth): TrueForgeApi.McpServerManife
   }
   if (auth.type === 'dcr') {
     return { type: 'dcr' };
+  }
+  if (auth.type === 'oauth') {
+    const clientSecret = auth.clientSecret?.trim();
+    const scopes = auth.scopes?.trim();
+    return {
+      type: 'oauth',
+      client_id: auth.clientId.trim(),
+      ...(clientSecret !== undefined && clientSecret !== '' ? { client_secret: clientSecret } : {}),
+      ...(scopes !== undefined && scopes !== '' ? { scopes } : {}),
+    };
   }
   const apiKey = auth.apiKey?.trim();
   if (apiKey === undefined || apiKey === '') {
@@ -166,6 +184,20 @@ export function createConnectorCatalog(
   }
 
   async function resolveWriteAuth(req: { id?: string; auth: ConnectorAuth }): Promise<ConnectorAuth> {
+    if (req.auth.type === 'oauth') {
+      const clientSecret = req.auth.clientSecret?.trim();
+      if (clientSecret !== undefined && clientSecret !== '') {
+        return req.auth;
+      }
+      if (req.id === undefined) {
+        return req.auth;
+      }
+      const existing = await getConfigured(req.id);
+      if (existing.manifest.auth?.type !== 'oauth' || existing.manifest.auth.client_secret === undefined) {
+        return req.auth;
+      }
+      return { ...req.auth, clientSecret: existing.manifest.auth.client_secret };
+    }
     if (req.auth.type !== 'header') {
       return req.auth;
     }

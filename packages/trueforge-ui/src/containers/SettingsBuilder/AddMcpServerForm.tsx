@@ -26,11 +26,19 @@ type AddMcpServerFormProps = {
   error?: string | null;
 };
 
-const AUTH_OPTIONS: Array<{ value: McpAuthType; label: string }> = [
+const AUTH_OPTIONS: Array<{ value: 'none' | 'header' | 'dcr'; label: string }> = [
   { value: 'none', label: 'None' },
   { value: 'header', label: 'API Key' },
   { value: 'dcr', label: 'OAuth' },
 ];
+
+/** Stored pre-registered clients are still OAuth. The form shows them on the OAuth option. */
+function formAuthType(type: ConnectorAuthType | undefined): 'none' | 'header' | 'dcr' {
+  if (type === 'header' || type === 'none') {
+    return type;
+  }
+  return 'dcr';
+}
 
 const inputClassName = auiInputClass('h-11 shadow-sm');
 
@@ -44,9 +52,14 @@ const AddMcpServerForm = ({ open, onOpenChange, onSubmit, connector, busy = fals
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
-  const [authType, setAuthType] = useState<McpAuthType>('dcr');
+  const [authType, setAuthType] = useState<'none' | 'header' | 'dcr'>('dcr');
   const [apiKey, setApiKey] = useState('');
   const [headerName, setHeaderName] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [scopes, setScopes] = useState('');
+  const [registration, setRegistration] = useState<'dcr' | 'client'>('dcr');
+  const [copied, setCopied] = useState(false);
   const isEditing = connector !== undefined;
   const nameInputClassName = auiInputClass(
     `h-11 shadow-sm ${isEditing ? 'cursor-not-allowed bg-secondary-bg/60 text-text-secondary opacity-40' : ''}`,
@@ -59,6 +72,11 @@ const AddMcpServerForm = ({ open, onOpenChange, onSubmit, connector, busy = fals
     setAuthType('dcr');
     setApiKey('');
     setHeaderName('');
+    setClientId('');
+    setClientSecret('');
+    setScopes('');
+    setRegistration('dcr');
+    setCopied(false);
   };
 
   useEffect(() => {
@@ -66,10 +84,31 @@ const AddMcpServerForm = ({ open, onOpenChange, onSubmit, connector, busy = fals
     setName(connector?.name ?? '');
     setUrl(connector?.url ?? '');
     setDescription(connector?.description ?? '');
-    setAuthType(connector?.auth.type ?? 'dcr');
+    setAuthType(formAuthType(connector?.auth.type));
     setApiKey('');
     setHeaderName(connector?.auth.type === 'header' ? (connector.auth.headerName ?? '') : '');
+    setClientId(connector?.auth.type === 'oauth' ? (connector.auth.clientId ?? '') : '');
+    setClientSecret('');
+    setScopes(connector?.auth.type === 'oauth' ? (connector.auth.scopes ?? '') : '');
+    setRegistration(connector?.auth.type === 'oauth' ? 'client' : 'dcr');
+    setCopied(false);
   }, [connector, open]);
+
+  const callbackUrl =
+    typeof window === 'undefined' ? '' : `${window.location.origin}/api/v1/mcp-servers/oauth/callback`;
+
+  const copyCallbackUrl = async () => {
+    if (callbackUrl === '') {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(callbackUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) resetForm();
@@ -77,7 +116,12 @@ const AddMcpServerForm = ({ open, onOpenChange, onSubmit, connector, busy = fals
   };
 
   const hasApiKey = !!apiKey.trim() || connector?.auth.type === 'header';
-  const isValid = !!name.trim() && !!description.trim() && !!url.trim() && (authType !== 'header' || hasApiKey);
+  const isValid =
+    !!name.trim() &&
+    !!description.trim() &&
+    !!url.trim() &&
+    (authType !== 'header' || hasApiKey) &&
+    (authType !== 'dcr' || registration !== 'client' || !!clientId.trim());
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -90,7 +134,14 @@ const AddMcpServerForm = ({ open, onOpenChange, onSubmit, connector, busy = fals
             apiKey: apiKey.trim(),
             ...(headerName.trim() ? { headerName: headerName.trim() } : {}),
           }
-        : { type: authType };
+        : authType === 'dcr' && registration === 'client'
+          ? {
+              type: 'oauth',
+              clientId: clientId.trim(),
+              ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
+              ...(scopes.trim() ? { scopes: scopes.trim() } : {}),
+            }
+          : { type: authType };
 
     try {
       await onSubmit({
@@ -217,13 +268,116 @@ const AddMcpServerForm = ({ open, onOpenChange, onSubmit, connector, busy = fals
           </fieldset>
 
           {authType === 'dcr' ? (
-            <div className="flex gap-1.5 bg-secondary-bg/40 p-2 rounded-md">
-              <Icon name="info" className="size-3.5 mt-1 text-text-secondary" />
-              <div className="text-xs text-text-secondary leading-5.5">
-                Sign-in only — the server must support dynamic client registration. Manual OAuth (client ID / secret)
-                isn't supported yet.
+            <>
+              <div>
+                <label htmlFor="mcp-registration-method" className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Registration method
+                </label>
+                <select
+                  id="mcp-registration-method"
+                  value={registration}
+                  className={auiInputClass('h-11 cursor-pointer shadow-sm')}
+                  onChange={event => {
+                    setRegistration(event.target.value === 'client' ? 'client' : 'dcr');
+                  }}
+                >
+                  <option value="dcr">Dynamic Client Registration</option>
+                  <option value="client">User-Defined OAuth Client</option>
+                </select>
+                <p className="mt-1.5 text-xs text-text-secondary">
+                  {registration === 'dcr'
+                    ? 'TrueForge registers an OAuth client when you save. The authorization server must allow dynamic registration.'
+                    : 'Use a client that already exists on the authorization server. Each person still signs in.'}
+                </p>
               </div>
-            </div>
+
+              {registration === 'client' ? (
+                <>
+                  <div>
+                    <label htmlFor="mcp-callback-url" className="mb-1.5 block text-sm font-medium text-text-primary">
+                      Callback URL
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        id="mcp-callback-url"
+                        type="text"
+                        readOnly
+                        value={callbackUrl}
+                        className={auiInputClass('h-11 cursor-text shadow-sm')}
+                      />
+                      <Button.Secondary
+                        type="button"
+                        className="h-11 shrink-0 px-3"
+                        aria-label="Copy callback URL"
+                        onClick={() => {
+                          void copyCallbackUrl();
+                        }}
+                      >
+                        <Icon name="copy" className="size-4" />
+                        <span className="sr-only">{copied ? 'Copied' : 'Copy'}</span>
+                      </Button.Secondary>
+                    </div>
+                    <p className="mt-1.5 text-xs text-text-secondary">
+                      {copied ? 'Copied.' : 'Add this redirect on the OAuth client.'}
+                    </p>
+                  </div>
+                  <div>
+                    <label htmlFor="mcp-server-client-id" className="mb-1.5 block text-sm font-medium text-text-primary">
+                      OAuth client ID
+                      <RequiredMark />
+                    </label>
+                    <input
+                      id="mcp-server-client-id"
+                      type="text"
+                      required
+                      value={clientId}
+                      onChange={event => {
+                        setClientId(event.target.value);
+                      }}
+                      placeholder="OAuth client ID"
+                      className={inputClassName}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="mcp-server-client-secret"
+                      className="mb-1.5 block text-sm font-medium text-text-primary"
+                    >
+                      OAuth client secret <span className="font-normal text-text-secondary">(optional)</span>
+                    </label>
+                    <input
+                      id="mcp-server-client-secret"
+                      type="password"
+                      value={clientSecret}
+                      onChange={event => {
+                        setClientSecret(event.target.value);
+                      }}
+                      placeholder={
+                        connector?.auth.type === 'oauth' && connector.auth.hasClientSecret
+                          ? 'Leave blank to keep the current secret'
+                          : 'OAuth client secret (optional)'
+                      }
+                      className={inputClassName}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="mcp-server-scopes" className="mb-1.5 block text-sm font-medium text-text-primary">
+                      Scopes <span className="font-normal text-text-secondary">(optional)</span>
+                    </label>
+                    <input
+                      id="mcp-server-scopes"
+                      type="text"
+                      value={scopes}
+                      onChange={event => {
+                        setScopes(event.target.value);
+                      }}
+                      placeholder="openid profile email"
+                      className={inputClassName}
+                    />
+                  </div>
+                </>
+              ) : null}
+            </>
           ) : null}
 
           {authType === 'header' ? (

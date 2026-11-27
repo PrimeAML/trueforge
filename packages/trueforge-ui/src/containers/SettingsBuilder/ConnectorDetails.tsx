@@ -9,7 +9,7 @@ import { Icon } from '../../icons/Icon.js';
 import { useCatalogServer } from '../../server/ServerContext.js';
 import type { ConnectorBase, ToolBase } from '../../server/types.js';
 import { getErrorMessage } from '../../utils/getErrorMessage.js';
-import { AUTH_TYPE_LABELS } from './authTypeLabels.js';
+import { AUTH_TYPE_LABELS, connectorUsesUserOAuth } from './authTypeLabels.js';
 
 type ConnectorDetailsProps = {
   connector: ConnectorBase;
@@ -204,7 +204,7 @@ const ConnectorDetails = ({
               <Icon name="pencil" className="size-3" />
               Edit
             </Button.Secondary>
-            {connector.auth.type === 'dcr' && !connector.authenticated ? (
+            {connectorUsesUserOAuth(connector.auth.type) && !connector.authenticated ? (
               <Button.Secondary
                 size="small"
                 type="button"
@@ -217,7 +217,7 @@ const ConnectorDetails = ({
               >
                 {connecting ? 'Connecting…' : 'Connect'}
               </Button.Secondary>
-            ) : connector.auth.type === 'dcr' && !connector.requiresAuth ? (
+            ) : connectorUsesUserOAuth(connector.auth.type) && !connector.requiresAuth ? (
               <Button.Secondary size="small" type="button" disabled={busy} onClick={onDisconnect}>
                 Disconnect
               </Button.Secondary>
@@ -245,7 +245,7 @@ const ConnectorDetails = ({
           ) : toolsError ? (
             <div className="rounded-xl border border-failure-bg/30 bg-failure-bg/10 p-6 text-center text-sm text-failure-bg">
               {toolsError}
-              {connector.auth.type === 'dcr' && !connector.authenticated && (
+              {connectorUsesUserOAuth(connector.auth.type) && !connector.authenticated && (
                 <div className="font-bold mt-1">Click Connect and authenticate successfully to view tools.</div>
               )}
             </div>

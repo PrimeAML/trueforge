@@ -45,10 +45,12 @@ export interface OAuthServerMetadata {
   codeChallengeMethodsSupported: string[] | null;
 }
 
-/** Credentials for a dynamically registered client. */
+/** Credentials for a dynamically registered client, or a client id supplied by the admin. */
 export interface OAuthClientCredentials {
   clientId: string;
   clientSecret: string | null;
+  /** Space-separated authorize scopes. Absent for dynamic registration, which omits `scope`. */
+  scopes?: string | null;
 }
 
 export interface OAuthClientRecord {

@@ -45,8 +45,42 @@ const McpServerDcrAuthSchema = z
   .strict()
   .openapi('MCPServerDcrAuth');
 
+/**
+ * OAuth against a client that already exists on the authorization server.
+ * Public clients omit `client_secret` and use PKCE. Each user still signs in;
+ * the client id only identifies this TrueForge instance.
+ */
+const McpServerOAuthClientAuthSchema = z
+  .object({
+    type: z.literal('oauth').describe('Authenticate with a pre-registered OAuth client id.'),
+    client_id: z
+      .string()
+      .trim()
+      .min(1)
+      .describe(
+        'OAuth client id already registered on the authorization server. That client must allow the TrueForge callback redirect.',
+      ),
+    client_secret: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Client secret for a confidential client. Omit for a public PKCE client. Responses are redacted; on PUT, a real value sets/rotates and a redacted value keeps the stored secret.',
+      ),
+    scopes: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Space-separated scopes requested at authorization. Example: openid roles ams-bo offline_access.',
+      ),
+  })
+  .strict()
+  .openapi('MCPServerOAuthClientAuth');
+
 export const McpServerManifestAuthSchema = z
-  .discriminatedUnion('type', [McpServerHeaderAuthSchema, McpServerDcrAuthSchema])
+  .discriminatedUnion('type', [McpServerHeaderAuthSchema, McpServerDcrAuthSchema, McpServerOAuthClientAuthSchema])
   .describe('Optional auth settings. Omit when the server needs no credentials.')
   .openapi('MCPServerManifestAuth');
 
@@ -136,6 +170,7 @@ export const McpServerAuthPublicSchema = z
   .discriminatedUnion('type', [
     z.object({ type: z.literal('dcr') }).strict(),
     z.object({ type: z.literal('header') }).strict(),
+    z.object({ type: z.literal('oauth') }).strict(),
   ])
   .describe('Auth mechanism when configured (no secrets). Omit when the server needs no credentials.')
   .openapi('MCPServerAuthPublic');
@@ -163,6 +198,13 @@ export const GetAvailableMcpServerResponseSchema = z
 
 export type McpServerType = z.infer<typeof McpServerTypeSchema>;
 export type McpServerManifestAuth = z.infer<typeof McpServerManifestAuthSchema>;
+
+/** True when each user must consent and TrueForge stores that user's access token. */
+export function manifestUsesUserOAuth(
+  auth: McpServerManifestAuth | undefined,
+): auth is Extract<McpServerManifestAuth, { type: 'dcr' | 'oauth' }> {
+  return auth?.type === 'dcr' || auth?.type === 'oauth';
+}
 export type RemoteMcpServerManifest = z.infer<typeof RemoteMcpServerManifestSchema>;
 export type TrueFoundryMcpServerManifest = z.infer<typeof TrueFoundryMcpServerManifestSchema>;
 export type McpServerManifest = z.infer<typeof McpServerManifestSchema>;
@@ -196,7 +238,7 @@ export function resolveMcpAuthStatus({
   if (manifest.type === 'truefoundry') {
     return { status: 'authenticated' };
   }
-  if (manifest.auth?.type === 'dcr') {
+  if (manifestUsesUserOAuth(manifest.auth)) {
     return token ? { status: 'authenticated' } : { status: 'auth_required' };
   }
   if (manifest.auth?.type === 'header') {
