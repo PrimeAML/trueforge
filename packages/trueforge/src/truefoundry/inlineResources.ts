@@ -86,8 +86,8 @@ export function parseInlineMcpServers(raw: string): InlineMcpServers {
       if (!parsed.success) {
         return { ok: false, reason: 'is not a valid MCP server definition' };
       }
-      if (parsed.data.auth?.type === 'dcr') {
-        return { ok: false, reason: 'cannot use dcr auth — it needs a registered client and a stored token' };
+      if (parsed.data.auth?.type === 'dcr' || parsed.data.auth?.type === 'oauth') {
+        return { ok: false, reason: 'cannot use user oauth — it needs a saved client and a stored token' };
       }
       return { ok: true, manifest: parsed.data };
     },

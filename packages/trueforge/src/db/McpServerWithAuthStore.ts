@@ -2,7 +2,12 @@ import type { RemoteMcpHeaders, ResolveHeadersResult } from '@truefoundry/truefo
 import { beginMcpAuthorization, isMcpAuthRequired, resolveMcpAuth } from '../mcp/auth/mcpDcr';
 import type { IOAuthTokenStore, OAuthClientRecord } from '../mcp/auth/types';
 import { hasAuthorizationHeader, mergeServerHeaders, type PerServerMcpHeaders } from '../runtime/perServerMcpHeaders';
-import { resolveConfiguredMcpRequestHeaders, resolveMcpAuthStatus, type McpAuthStatus } from '../schemas/mcpServer';
+import {
+  manifestUsesUserOAuth,
+  resolveConfiguredMcpRequestHeaders,
+  resolveMcpAuthStatus,
+  type McpAuthStatus,
+} from '../schemas/mcpServer';
 import {
   McpServerNotFoundError,
   type AuthorizeMcpServerInput,
@@ -98,7 +103,8 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
   /** DCR token (or consent before connect), otherwise the static manifest headers. No 401 hook unless DCR. */
   #buildResolveHeaders(input: { record: McpServerRecord; userRef: string }): RemoteMcpHeaders {
     const { record, userRef } = input;
-    if (record.manifest.auth?.type === 'dcr') {
+    if (manifestUsesUserOAuth(record.manifest.auth)) {
+      const dynamicRegistration = record.manifest.auth.type === 'dcr';
       return async (): Promise<ResolveHeadersResult> => {
         const result = await resolveMcpAuth({
           tokenStore: this.#tokenStore,
@@ -108,6 +114,7 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
           mcpServerUrl: record.manifest.url,
           mcpServerName: record.name,
           clientName: this.#clientName,
+          dynamicRegistration,
         });
         if (isMcpAuthRequired(result)) {
           // Wire `id` must match RemoteMCP.id (AgentSpec name), not the DB row ULID.
@@ -129,6 +136,7 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
               mcpServerUrl: record.manifest.url,
               mcpServerName: record.name,
               clientName: this.#clientName,
+              dynamicRegistration,
             });
             return { servers: [{ id: record.name, name: record.name, auth_url: authorizationUrl.href }] };
           },
@@ -151,7 +159,9 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
   }
 
   async resolveAuthStatuses(input: ResolveMcpAuthStatusesInput): Promise<ReadonlyMap<string, McpAuthStatus>> {
-    const dcrIds = input.records.filter(record => record.manifest.auth?.type === 'dcr').map(record => record.id);
+    const dcrIds = input.records
+      .filter(record => manifestUsesUserOAuth(record.manifest.auth))
+      .map(record => record.id);
     const tokens = await this.#tokenStore.getTokens({ ids: dcrIds, userRef: input.userRef });
     const out = new Map<string, McpAuthStatus>();
     for (const record of input.records) {
@@ -172,7 +182,7 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
     if (record === undefined) {
       throw new McpServerNotFoundError(input.name);
     }
-    if (record.manifest.auth?.type !== 'dcr') {
+    if (!manifestUsesUserOAuth(record.manifest.auth)) {
       return resolveMcpAuthStatus({ manifest: record.manifest });
     }
     const result = await resolveMcpAuth({
@@ -183,6 +193,7 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
       mcpServerUrl: record.manifest.url,
       mcpServerName: record.name,
       clientName: this.#clientName,
+      dynamicRegistration: record.manifest.auth.type === 'dcr',
       ...(input.returnTo !== undefined ? { returnTo: input.returnTo } : {}),
     });
     return isMcpAuthRequired(result)
@@ -195,7 +206,7 @@ export class McpServerWithAuthStore<TTransaction = never> implements IMcpServerW
     if (record === undefined) {
       throw new McpServerNotFoundError(input.name);
     }
-    if (record.manifest.auth?.type === 'dcr') {
+    if (manifestUsesUserOAuth(record.manifest.auth)) {
       await this.#tokenStore.deleteToken({ id: record.id, userRef: input.userRef });
     }
   }

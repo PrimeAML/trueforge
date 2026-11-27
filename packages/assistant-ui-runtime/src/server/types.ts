@@ -729,12 +729,19 @@ export interface ToolBase {
 }
 
 /** Strict auth type id. Hosts widen branches via intersection + re-union. */
-export type ConnectorAuthType = 'dcr' | 'header' | 'none';
+export type ConnectorAuthType = 'dcr' | 'header' | 'none' | 'oauth';
 
 // Write (create/update) — export branches so hosts can intersect extras
 export interface ConnectorAuthOAuth {
   type: 'dcr';
   authUrl?: string;
+}
+/** Pre-registered OAuth client. Omit `clientSecret` for a public PKCE client. */
+export interface ConnectorAuthOAuthClient {
+  type: 'oauth';
+  clientId: string;
+  clientSecret?: string;
+  scopes?: string;
 }
 export interface ConnectorAuthApiKey {
   type: 'header';
@@ -744,12 +751,19 @@ export interface ConnectorAuthApiKey {
 export interface ConnectorAuthNone {
   type: 'none';
 }
-export type ConnectorAuth = ConnectorAuthOAuth | ConnectorAuthApiKey | ConnectorAuthNone;
+export type ConnectorAuth = ConnectorAuthOAuth | ConnectorAuthOAuthClient | ConnectorAuthApiKey | ConnectorAuthNone;
 
 // Public (list/detail) — no secrets
 export interface ConnectorAuthPublicOAuth {
   type: 'dcr';
   authUrl?: string;
+}
+export interface ConnectorAuthPublicOAuthClient {
+  type: 'oauth';
+  clientId?: string;
+  scopes?: string;
+  /** True when a client secret is already stored. The value itself is not sent to the form. */
+  hasClientSecret?: boolean;
 }
 export interface ConnectorAuthPublicApiKey {
   type: 'header';
@@ -758,7 +772,11 @@ export interface ConnectorAuthPublicApiKey {
 export interface ConnectorAuthPublicNone {
   type: 'none';
 }
-export type ConnectorAuthPublic = ConnectorAuthPublicOAuth | ConnectorAuthPublicApiKey | ConnectorAuthPublicNone;
+export type ConnectorAuthPublic =
+  | ConnectorAuthPublicOAuth
+  | ConnectorAuthPublicOAuthClient
+  | ConnectorAuthPublicApiKey
+  | ConnectorAuthPublicNone;
 
 /**
  * MCP / connector create-edit config. Host extends for extra fields, etc.

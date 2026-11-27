@@ -35,7 +35,7 @@ The catalog entries under **Settings → Connectors** (Linear, Notion, GitHub, a
 
 - **No auth** — public or network-trusted servers.
 - **Header auth** — static HTTP headers (API keys, bearer tokens) sent on every request.
-- **OAuth (Dynamic Client Registration)** — TrueForge registers as an OAuth client, runs the authorization-code flow, and stores and refreshes tokens. Users never paste tokens into the agent.
+- **OAuth** — each person signs in at the authorization server. Dynamic registration leaves the client id empty. User-defined registration uses a client that already exists, with an optional secret and scopes. A public client leaves the secret empty. The callback URL is shown for user-defined registration. Add it to that client's redirect URIs.
 
 <Info>
   For OAuth to work, the MCP server must redirect the user back to your TrueForge instance — so the server needs to

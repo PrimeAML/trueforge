@@ -18,7 +18,7 @@ import { getErrorMessage } from '@/utils/getErrorMessage.js';
 import ConfirmDeleteDialog from '../../atoms/primitives/ConfirmDeleteDialog.js';
 import { useToasterOptional } from '../ToasterContainer.js';
 import AddMcpServerForm, { type AddMcpServerDraft } from './AddMcpServerForm.js';
-import { AUTH_TYPE_LABELS } from './authTypeLabels.js';
+import { AUTH_TYPE_LABELS, connectorUsesUserOAuth } from './authTypeLabels.js';
 import ConnectorDetails from './ConnectorDetails.js';
 
 type ConnectorListItem =
@@ -164,7 +164,13 @@ const ConnectorSettings = () => {
           }
         : entry.auth.type === 'dcr'
           ? { type: 'dcr' }
-          : { type: 'none' });
+          : entry.auth.type === 'oauth'
+            ? {
+                type: 'oauth',
+                clientId: entry.auth.clientId ?? '',
+                ...(entry.auth.scopes ? { scopes: entry.auth.scopes } : {}),
+              }
+            : { type: 'none' });
     await connectorCatalog.createConnector({
       name: entry.name,
       description: entry.description ?? entry.url,
@@ -313,7 +319,7 @@ const ConnectorSettings = () => {
 
     const rowClassName = 'flex min-h-16 w-full items-center gap-3 border-b border-border p-3 text-left last:border-b-0';
     // OAuth servers land here unauthenticated, so the list offers the same Connect as the detail view.
-    const needsAuthorization = connector.auth.type === 'dcr' && !connector.authenticated;
+    const needsAuthorization = connectorUsesUserOAuth(connector.auth.type) && !connector.authenticated;
     const connecting = isOAuthLoading && authorizingId === connector.id;
 
     if (isConnected) {

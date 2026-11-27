@@ -21,7 +21,7 @@ import {
   type McpServerRecord,
 } from '../db/mcpServerStore';
 import type { WithTransaction } from '../db/transaction';
-import { createMcpOAuthClient } from '../mcp/auth/mcpDcr';
+import { createConfiguredMcpOAuthClient, createMcpOAuthClient } from '../mcp/auth/mcpDcr';
 import { mcpOAuthCallbackUrl } from '../mcp/auth/mcpOAuthHelpers';
 import type { IOAuthTokenStore, OAuthClientRecord } from '../mcp/auth/types';
 import {
@@ -71,8 +71,20 @@ function omitUndefinedEntries(obj: Record<string, unknown>): Record<string, unkn
   return out;
 }
 
-/** Settings wire view: redact header secrets; leave DCR / no-auth manifests unchanged. */
+/** Collapses whitespace. Empty input means "do not send a scope parameter". */
+function normalizeOAuthScopes(scopes: string | undefined): string | null {
+  const normalized = scopes?.trim().replace(/\s+/g, ' ') ?? '';
+  return normalized === '' ? null : normalized;
+}
+
+/** Settings wire view: redact header secrets and OAuth client secrets. */
 function redactMcpServerManifest(manifest: McpServerManifest): McpServerManifest {
+  if (manifest.auth?.type === 'oauth' && manifest.auth.client_secret !== undefined) {
+    return {
+      ...manifest,
+      auth: { ...manifest.auth, client_secret: toRedactedSecretValue(manifest.auth.client_secret) },
+    };
+  }
   if (manifest.auth?.type !== 'header') {
     return manifest;
   }
@@ -98,6 +110,26 @@ function resolveMcpServerManifestForWrite({
   incoming: McpServerManifest;
   existing: McpServerManifest | undefined;
 }): McpServerManifest {
+  if (incoming.auth?.type === 'oauth') {
+    const existingSecret = existing?.auth?.type === 'oauth' ? existing.auth.client_secret : undefined;
+    const incomingSecret = incoming.auth.client_secret;
+    let clientSecret: string | undefined;
+    if (incomingSecret === undefined || incomingSecret === '') {
+      clientSecret = existingSecret;
+    } else {
+      clientSecret = resolveStoredSecretValue({ incoming: incomingSecret, existing: existingSecret });
+    }
+    const scopes = normalizeOAuthScopes(incoming.auth.scopes);
+    return {
+      ...incoming,
+      auth: {
+        type: 'oauth',
+        client_id: incoming.auth.client_id,
+        ...(clientSecret !== undefined ? { client_secret: clientSecret } : {}),
+        ...(scopes !== null ? { scopes } : {}),
+      },
+    };
+  }
   if (incoming.auth?.type !== 'header') {
     return incoming;
   }
@@ -212,26 +244,6 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: SettingsMcpSe
       throw new HTTPException(400, { message: message, cause: error });
     }
 
-    // DCR finishes before the txn (remote I/O stays out of withTransaction on create).
-    let dcrClientToSave: OAuthClientRecord | undefined;
-    if (incomingManifest.auth?.type === 'dcr') {
-      try {
-        dcrClientToSave = await createMcpOAuthClient({
-          mcpServerUrl: incomingManifest.url,
-          mcpServerName: incomingManifest.name,
-          redirectUri: mcpOAuthCallbackUrl(),
-          clientName: configuration.MCP_DCR_OAUTH_CLIENT_NAME,
-        });
-      } catch (error) {
-        deps.logger.error(
-          `DCR client registration failed for "${incomingManifest.name}"; rejecting create`,
-          extractErrorLogFields(error),
-        );
-        const message = error instanceof Error ? error.message : 'Failed to register OAuth client for this MCP server';
-        return c.json({ error: { message } }, 422);
-      }
-    }
-
     let manifest: McpServerManifest;
     try {
       manifest = resolveMcpServerManifestForWrite({
@@ -243,6 +255,35 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: SettingsMcpSe
         throw new HTTPException(400, { message: 'Header secret is required', cause: error });
       }
       throw error;
+    }
+
+    // OAuth discovery finishes before the txn (remote I/O stays out of withTransaction on create).
+    let dcrClientToSave: OAuthClientRecord | undefined;
+    if (manifest.auth?.type === 'dcr' || manifest.auth?.type === 'oauth') {
+      try {
+        dcrClientToSave =
+          manifest.auth.type === 'dcr'
+            ? await createMcpOAuthClient({
+                mcpServerUrl: manifest.url,
+                mcpServerName: manifest.name,
+                redirectUri: mcpOAuthCallbackUrl(),
+                clientName: configuration.MCP_DCR_OAUTH_CLIENT_NAME,
+              })
+            : await createConfiguredMcpOAuthClient({
+                mcpServerUrl: manifest.url,
+                mcpServerName: manifest.name,
+                clientId: manifest.auth.client_id,
+                clientSecret: manifest.auth.client_secret ?? null,
+                scopes: normalizeOAuthScopes(manifest.auth.scopes),
+              });
+      } catch (error) {
+        deps.logger.error(
+          `OAuth client setup failed for "${incomingManifest.name}"; rejecting create`,
+          extractErrorLogFields(error),
+        );
+        const message = error instanceof Error ? error.message : 'Failed to prepare OAuth client for this MCP server';
+        return c.json({ error: { message } }, 422);
+      }
     }
 
     try {
@@ -308,12 +349,12 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: SettingsMcpSe
         });
 
         let dcrClientToSave: OAuthClientRecord | undefined;
-        const urlChanged =
-          existing !== undefined && existing.manifest.url !== manifest.url && manifest.auth?.type === 'dcr';
+        const userOAuth = manifest.auth?.type === 'dcr' || manifest.auth?.type === 'oauth';
+        const urlChanged = existing !== undefined && existing.manifest.url !== manifest.url && userOAuth;
+        const existingClient = existing
+          ? await deps.resolveMcpServerStore(c).getClient({ id: existing.id }, transaction)
+          : undefined;
         if (manifest.auth?.type === 'dcr') {
-          const existingClient = existing
-            ? await deps.resolveMcpServerStore(c).getClient({ id: existing.id }, transaction)
-            : undefined;
           // Register when: brand-new server, client was cleared (e.g. invalid_client), or MCP URL changed
           // (resource/AS may differ; reuse would keep stale oauth_server/client for the old AS).
           const needsDcr = existingClient === undefined || urlChanged;
@@ -323,6 +364,25 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: SettingsMcpSe
               mcpServerName: manifest.name,
               redirectUri: mcpOAuthCallbackUrl(),
               clientName: configuration.MCP_DCR_OAUTH_CLIENT_NAME,
+            });
+          }
+        }
+        let oauthCredentialsChanged = false;
+        if (manifest.auth?.type === 'oauth') {
+          const scopes = normalizeOAuthScopes(manifest.auth.scopes);
+          oauthCredentialsChanged =
+            existingClient === undefined ||
+            existingClient.client.clientId !== manifest.auth.client_id ||
+            (existingClient.client.clientSecret ?? null) !== (manifest.auth.client_secret ?? null) ||
+            (existingClient.client.scopes ?? null) !== scopes ||
+            urlChanged;
+          if (oauthCredentialsChanged) {
+            dcrClientToSave = await createConfiguredMcpOAuthClient({
+              mcpServerUrl: manifest.url,
+              mcpServerName: manifest.name,
+              clientId: manifest.auth.client_id,
+              clientSecret: manifest.auth.client_secret ?? null,
+              scopes,
             });
           }
         }
@@ -339,7 +399,7 @@ export function createSettingsMcpServersRouter<TTransaction>(deps: SettingsMcpSe
           // New DCR registration (create, missing client, or URL change): replace the shared client.
           await deps.resolveMcpServerStore(c).saveClient({ id: saved.id, record: dcrClientToSave }, transaction);
         }
-        if (urlChanged) {
+        if (urlChanged || oauthCredentialsChanged) {
           // URL is the OAuth resource/audience — drop every user's tokens and in-flight authorizes.
           await deps.tokenStore.deleteTokensForServer({ id: saved.id }, transaction);
           await deps.tokenStore.deletePendingAuthorizationsForServer({ id: saved.id }, transaction);

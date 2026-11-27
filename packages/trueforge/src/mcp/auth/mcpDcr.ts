@@ -121,6 +121,55 @@ async function registerMcpClientWithAuthMethodFallback(params: {
   };
 }
 
+interface DiscoveredAuthorizationServer {
+  authorizationServerUrl: string;
+  metadata: AuthorizationServerMetadata;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+}
+
+/** Discovers the MCP resource's authorization server and checks PKCE S256. */
+async function discoverMcpAuthorizationServer(params: {
+  mcpServerUrl: string;
+  mcpServerName: string;
+  requireRegistrationEndpoint: boolean;
+}): Promise<DiscoveredAuthorizationServer> {
+  const { mcpServerUrl, mcpServerName, requireRegistrationEndpoint } = params;
+  let discovered: Awaited<ReturnType<typeof discoverOAuthServerInfo>>;
+  try {
+    discovered = await discoverOAuthServerInfo(mcpServerUrl, { fetchFn: mcpOAuthFetch });
+  } catch (error: unknown) {
+    throw mcpOAuthConnectionError(
+      `Failed to discover OAuth authorization server for MCP server '${mcpServerName}'`,
+      error,
+      424,
+    );
+  }
+  const { authorizationServerUrl, authorizationServerMetadata: metadata } = discovered;
+  if (requireRegistrationEndpoint && !metadata?.registration_endpoint) {
+    throw new McpDcrConfigurationError(
+      `MCP server '${mcpServerName}' has no DCR support (missing registration_endpoint); auth.type: dcr is misconfigured for this server`,
+    );
+  }
+  if (!metadata || !metadata.authorization_endpoint || !metadata.token_endpoint) {
+    throw new McpDcrConfigurationError(
+      `Authorization server for MCP server '${mcpServerName}' is missing authorization_endpoint or token_endpoint`,
+    );
+  }
+  const pkceMethods = metadata.code_challenge_methods_supported;
+  if (pkceMethods && !pkceMethods.includes('S256')) {
+    throw new McpDcrConfigurationError(
+      `Authorization server for MCP server '${mcpServerName}' advertises PKCE methods without S256`,
+    );
+  }
+  return {
+    authorizationServerUrl,
+    metadata,
+    authorizationEndpoint: metadata.authorization_endpoint,
+    tokenEndpoint: metadata.token_endpoint,
+  };
+}
+
 /**
  * Discovers the MCP server's authorization server, validates DCR + S256 PKCE support, and
  * registers a new OAuth client (RFC 7591). Returns AS endpoints + client credentials for the
@@ -133,33 +182,12 @@ export async function createMcpOAuthClient(params: {
   clientName: string;
 }): Promise<OAuthClientRecord> {
   const { mcpServerUrl, mcpServerName, redirectUri, clientName } = params;
-  let discovered: Awaited<ReturnType<typeof discoverOAuthServerInfo>>;
-  try {
-    discovered = await discoverOAuthServerInfo(mcpServerUrl, { fetchFn: mcpOAuthFetch });
-  } catch (error: unknown) {
-    throw mcpOAuthConnectionError(
-      `Failed to discover OAuth authorization server for MCP server '${mcpServerName}'`,
-      error,
-      424,
-    );
-  }
-  const { authorizationServerUrl, authorizationServerMetadata: metadata } = discovered;
-  if (!metadata?.registration_endpoint) {
-    throw new McpDcrConfigurationError(
-      `MCP server '${mcpServerName}' has no DCR support (missing registration_endpoint); auth.type: dcr is misconfigured for this server`,
-    );
-  }
-  if (!metadata.authorization_endpoint || !metadata.token_endpoint) {
-    throw new McpDcrConfigurationError(
-      `Authorization server for MCP server '${mcpServerName}' is missing authorization_endpoint or token_endpoint`,
-    );
-  }
-  const pkceMethods = metadata.code_challenge_methods_supported;
-  if (pkceMethods && !pkceMethods.includes('S256')) {
-    throw new McpDcrConfigurationError(
-      `Authorization server for MCP server '${mcpServerName}' advertises PKCE methods without S256`,
-    );
-  }
+  const discovered = await discoverMcpAuthorizationServer({
+    mcpServerUrl,
+    mcpServerName,
+    requireRegistrationEndpoint: true,
+  });
+  const { authorizationServerUrl, metadata } = discovered;
   return registerMcpClientWithAuthMethodFallback({
     authorizationServerUrl,
     metadata,
@@ -170,9 +198,39 @@ export async function createMcpOAuthClient(params: {
       response_types: ['code'],
     },
     mcpServerName,
-    authorizationEndpoint: metadata.authorization_endpoint,
-    tokenEndpoint: metadata.token_endpoint,
+    authorizationEndpoint: discovered.authorizationEndpoint,
+    tokenEndpoint: discovered.tokenEndpoint,
   });
+}
+
+/**
+ * Discovers the authorization server and stores a client id the admin already registered.
+ * Does not call dynamic client registration. A null secret is a public PKCE client.
+ */
+export async function createConfiguredMcpOAuthClient(params: {
+  mcpServerUrl: string;
+  mcpServerName: string;
+  clientId: string;
+  clientSecret: string | null;
+  scopes: string | null;
+}): Promise<OAuthClientRecord> {
+  const discovered = await discoverMcpAuthorizationServer({
+    mcpServerUrl: params.mcpServerUrl,
+    mcpServerName: params.mcpServerName,
+    requireRegistrationEndpoint: false,
+  });
+  return {
+    server: {
+      authorizationEndpoint: discovered.authorizationEndpoint,
+      tokenEndpoint: discovered.tokenEndpoint,
+      codeChallengeMethodsSupported: discovered.metadata.code_challenge_methods_supported ?? null,
+    },
+    client: {
+      clientId: params.clientId,
+      clientSecret: params.clientSecret,
+      scopes: params.scopes,
+    },
+  };
 }
 
 /**
@@ -185,10 +243,18 @@ export async function ensureMcpClientRegistered(params: {
   mcpServerUrl: string;
   mcpServerName: string;
   clientName: string;
+  /** When false, a missing client is an error instead of a dynamic registration. Default true. */
+  dynamicRegistration?: boolean;
 }): Promise<OAuthClientRecord> {
   const existing = await params.mcpServerStore.getClient({ id: params.serverId });
   if (existing) {
     return existing;
+  }
+  if (params.dynamicRegistration === false) {
+    throw new McpConnectionError(
+      `MCP server '${params.mcpServerName}' has no saved OAuth client. Save the connector again.`,
+      424,
+    );
   }
   const client = await createMcpOAuthClient({
     mcpServerUrl: params.mcpServerUrl,
@@ -218,6 +284,7 @@ export async function buildMcpAuthorizationUrl(params: {
       metadata: mcpAuthorizationServerMetadata(params.client.server),
       clientInformation: mcpClientInformation(params.client.client),
       redirectUrl: redirectUri,
+      ...(params.client.client.scopes ? { scope: params.client.client.scopes } : {}),
       resource: resourceUrlFromServerUrl(params.mcpServerUrl),
       state,
     });
@@ -249,6 +316,7 @@ export async function beginMcpAuthorization(params: {
   mcpServerUrl: string;
   mcpServerName: string;
   clientName: string;
+  dynamicRegistration?: boolean;
   returnTo?: string;
 }): Promise<URL> {
   const client = await ensureMcpClientRegistered({
@@ -257,6 +325,7 @@ export async function beginMcpAuthorization(params: {
     mcpServerUrl: params.mcpServerUrl,
     mcpServerName: params.mcpServerName,
     clientName: params.clientName,
+    ...(params.dynamicRegistration !== undefined ? { dynamicRegistration: params.dynamicRegistration } : {}),
   });
   const { authorizationUrl } = await buildMcpAuthorizationUrl({
     tokenStore: params.tokenStore,
@@ -278,6 +347,7 @@ export async function resolveMcpAuth(params: {
   mcpServerUrl: string;
   mcpServerName: string;
   clientName: string;
+  dynamicRegistration?: boolean;
   returnTo?: string;
 }): Promise<ResolveMcpAuthResult> {
   const nowMs = Date.now();
@@ -292,6 +362,7 @@ export async function resolveMcpAuth(params: {
     mcpServerUrl: params.mcpServerUrl,
     mcpServerName: params.mcpServerName,
     clientName: params.clientName,
+    ...(params.dynamicRegistration !== undefined ? { dynamicRegistration: params.dynamicRegistration } : {}),
   });
   if (token?.refreshToken) {
     try {
@@ -320,6 +391,7 @@ export async function resolveMcpAuth(params: {
     mcpServerUrl: params.mcpServerUrl,
     mcpServerName: params.mcpServerName,
     clientName: params.clientName,
+    ...(params.dynamicRegistration !== undefined ? { dynamicRegistration: params.dynamicRegistration } : {}),
     ...(params.returnTo !== undefined ? { returnTo: params.returnTo } : {}),
   });
   return { authUrl };

@@ -19,6 +19,7 @@ import { InMemoryOAuthClientStore, InMemoryOAuthTokenStore } from '../../../../s
 import {
   buildMcpAuthorizationUrl,
   completeMcpAuthorization,
+  createConfiguredMcpOAuthClient,
   createMcpOAuthClient,
   ensureMcpClientRegistered,
   isMcpAuthRequired,
@@ -737,5 +738,39 @@ describe('completeMcpAuthorization', () => {
     });
     expect(deleteClient).toHaveBeenCalledWith({ id: SERVER_ID });
     expect(await stores.mcpServerStore.getClient({ id: SERVER_ID })).toBeUndefined();
+  });
+});
+
+describe('createConfiguredMcpOAuthClient', () => {
+  it('uses the supplied public client id and does not call dynamic registration', async () => {
+    const { registerCallCount } = stubOauthFetch({ skipRegistrationEndpoint: true });
+
+    const record = await createConfiguredMcpOAuthClient({
+      mcpServerUrl: SERVER_URL,
+      mcpServerName: SERVER_NAME,
+      clientId: 'ams-mcp',
+      clientSecret: null,
+      scopes: 'openid roles ams-bo offline_access',
+    });
+
+    expect(registerCallCount()).toBe(0);
+    expect(record.client).toEqual({
+      clientId: 'ams-mcp',
+      clientSecret: null,
+      scopes: 'openid roles ams-bo offline_access',
+    });
+    expect(record.server.authorizationEndpoint).toBe(`${AS_ORIGIN}/authorize`);
+
+    const stores = newStores();
+    const { authorizationUrl } = await buildMcpAuthorizationUrl({
+      tokenStore: stores.tokenStore,
+      client: record,
+      serverId: SERVER_ID,
+      userRef: USER_REF,
+      mcpServerUrl: SERVER_URL,
+      mcpServerName: SERVER_NAME,
+    });
+    expect(authorizationUrl.searchParams.get('client_id')).toBe('ams-mcp');
+    expect(authorizationUrl.searchParams.get('scope')).toBe('openid roles ams-bo offline_access');
   });
 });

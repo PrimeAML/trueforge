@@ -230,7 +230,7 @@ export function isUnauthenticatedDcrConnector(connector: ConnectorState): boolea
     connector.authenticated === false &&
     typeof auth === 'object' &&
     auth !== null &&
-    Reflect.get(auth, 'type') === 'dcr'
+    (Reflect.get(auth, 'type') === 'dcr' || Reflect.get(auth, 'type') === 'oauth')
   );
 }
 

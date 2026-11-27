@@ -145,10 +145,12 @@ export interface OAuthServer {
   code_challenge_methods_supported: string[] | null;
 }
 
-/** RFC 7591 DCR response (`mcp_server.oauth_client`). */
+/** RFC 7591 DCR response, or a pre-registered client (`mcp_server.oauth_client`). */
 export interface OAuthClient {
   client_id: string;
   client_secret: string | null;
+  /** Space-separated authorize scopes. Omitted by clients registered dynamically. */
+  scopes?: string | null;
 }
 
 /** `oauth_pending_authorization.auth_data` JSONB. */
@@ -199,6 +201,7 @@ export function toStoredOAuthClientRecord(record: ContractOAuthClientRecord): {
     client: {
       client_id: record.client.clientId,
       client_secret: record.client.clientSecret,
+      ...(record.client.scopes ? { scopes: record.client.scopes } : {}),
     },
   };
 }
@@ -216,6 +219,7 @@ export function fromStoredOAuthClientRecord(params: {
     client: {
       clientId: params.client.client_id,
       clientSecret: params.client.client_secret,
+      scopes: params.client.scopes ?? null,
     },
   };
 }

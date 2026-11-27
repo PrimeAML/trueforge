@@ -5,12 +5,13 @@ import * as core from "../../core/index.js";
 import type * as serializers from "../index.js";
 import { McpServerDcrAuth } from "./McpServerDcrAuth.js";
 import { McpServerHeaderAuth } from "./McpServerHeaderAuth.js";
+import { McpServerOAuthClientAuth } from "./McpServerOAuthClientAuth.js";
 
 export const McpServerManifestAuth: core.serialization.Schema<
     serializers.McpServerManifestAuth.Raw,
     TrueForge.McpServerManifestAuth
-> = core.serialization.undiscriminatedUnion([McpServerDcrAuth, McpServerHeaderAuth]);
+> = core.serialization.undiscriminatedUnion([McpServerDcrAuth, McpServerHeaderAuth, McpServerOAuthClientAuth]);
 
 export declare namespace McpServerManifestAuth {
-    export type Raw = McpServerDcrAuth.Raw | McpServerHeaderAuth.Raw;
+    export type Raw = McpServerDcrAuth.Raw | McpServerHeaderAuth.Raw | McpServerOAuthClientAuth.Raw;
 }
